@@ -25,6 +25,8 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+REGIONS = {"sonarcloud.io": "https://sonarcloud.io", "sonarqube.us": "https://sonarqube.us"}
+
 
 class SetupError(RuntimeError):
     pass
@@ -82,8 +84,10 @@ def verify_hooks(workspace):
     settings_path = workspace / ".claude" / "settings.json"
     try:
         hooks = json.loads(settings_path.read_text()).get("hooks", {})
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, AttributeError) as exc:
         raise SetupError("Claude's project hook configuration is missing or unreadable.") from exc
+    if not isinstance(hooks, dict):
+        raise SetupError("Claude's project hook configuration is missing or unreadable.")
     for event, marker in [("SessionStart", "sonar-vortex"), ("PostToolUse", "sonar-sqaa")]:
         if marker not in json.dumps(hooks.get(event, [])):
             raise SetupError(f"Claude {event} does not reference the expected Sonar hook.")
@@ -106,6 +110,48 @@ def verify_features(state, workspace):
     return sorted(features)
 
 
+def assigned_workspace():
+    """Return the workspace sbx@1 assigned; never guess one."""
+    value = os.environ.get("WORKSPACE_DIR", "")
+    if not value or "${{" in value or not os.path.isabs(value):
+        raise SetupError("Docker did not assign a workspace (WORKSPACE_DIR is unset or unresolved).")
+    if not Path(value).is_dir():
+        raise SetupError("The assigned workspace does not exist inside the sandbox.")
+    return Path(value)
+
+
+def refuse_arguments(argv):
+    # The launch is exactly `claude`: no session verbs are declared, and any
+    # forwarded option (--settings, --permission-mode, ...) could override
+    # what the gate just verified.
+    if argv:
+        raise SetupError("This kit starts Claude without extra arguments; none were forwarded.")
+
+
+def write_report(report, status):
+    """Create the readiness report owner-only from the start."""
+    report.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(report, flags, 0o600), "w") as stream:
+        json.dump(status, stream, indent=2)
+        stream.write("\n")
+
+
+def check_permission_mode(workspace, home):
+    """Refuse settings that would make Claude skip permission prompts."""
+    for path in (home / ".claude/settings.json", workspace / ".claude/settings.json",
+                 workspace / ".claude/settings.local.json"):
+        try:
+            settings = json.loads(path.read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            raise SetupError(f"Claude settings are unreadable: {path.name}") from exc
+        permissions = settings.get("permissions") if isinstance(settings, dict) else None
+        if isinstance(permissions, dict) and permissions.get("defaultMode") == "bypassPermissions":
+            raise SetupError("Claude settings select bypassPermissions; this kit keeps permission prompts.")
+
+
 def bootstrap(workspace, project):
     workspace = Path(workspace).resolve()
     if not workspace.is_dir() or not project or not re.fullmatch(r"[A-Za-z0-9_.:-]+", project):
@@ -113,8 +159,10 @@ def bootstrap(workspace, project):
     if not os.environ.get("SONARQUBE_CLI_TOKEN") or not os.environ.get("SONARQUBE_CLI_ORG"):
         raise SetupError("Sonar credential was withheld or organization is missing. "
                          "Configure sbx secret set sonar-cloud and approve the kit's regional credential binding.")
-    if os.environ.get("SONARQUBE_CLI_SERVER") not in ("https://sonarcloud.io", "https://sonarqube.us"):
-        raise SetupError("This reference kit supports SonarQube Cloud EU or US only.")
+    domain = os.environ.get("SONAR_KIT_CLOUD_DOMAIN")
+    if domain not in REGIONS or os.environ.get("SONARQUBE_CLI_SERVER") != REGIONS[domain]:
+        raise SetupError("This reference kit supports SonarQube Cloud EU or US only, "
+                         "with cloudDomain and cloudServer set for the same region.")
     expected = json.loads(Path(__file__).with_name("versions.json").read_text())["cli_version"]
     version = run(["sonar", "--version"], workspace).strip()
     if version != expected:
@@ -129,28 +177,29 @@ def bootstrap(workspace, project):
     except (OSError, ValueError) as exc:
         raise SetupError("Sonar integration did not produce readable state.") from exc
     features = verify_features(state, workspace)
+    check_permission_mode(workspace, Path.home())
     return {"status": "configured", "checked_at": datetime.now(timezone.utc).isoformat(),
             "workspace": str(workspace), "project": project, "sonar_cli": version,
             "features": features, "live_guidance_verified": False, "live_analysis_verified": False}
 
 
-def main():
-    runtime = Path(__file__).parent
-    report = runtime / "readiness.json"
+def readiness_path():
+    # The gate itself is root-owned; its report lives in the agent's home.
+    return Path.home() / "sonar-kit" / "readiness.json"
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    report = readiness_path()
     # Invalidate a previous success before attempting a new session.
     report.unlink(missing_ok=True)
     try:
-        workspace = (runtime / "workspace.txt").read_text().strip()
-        if not workspace or "${WORKDIR}" in workspace:
-            raise SetupError("Docker did not resolve the primary workspace.")
+        refuse_arguments(argv)
+        workspace = assigned_workspace()
         status = bootstrap(workspace, os.environ.get("SONAR_KIT_PROJECT", ""))
-        # Create with owner-only permissions rather than tightening afterwards.
-        descriptor = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w") as stream:
-            stream.write(json.dumps(status, indent=2) + "\n")
+        write_report(report, status)
         print("Sonar guidance and verification configured. Live validation is still required.", flush=True)
         os.chdir(workspace)
-        # Start Claude with no forwarded arguments: the kit is the only launcher.
         os.execvp("claude", ["claude"])
     except (SetupError, OSError, ValueError) as exc:
         print("Sonar kit setup failed: " + redact(str(exc)), file=sys.stderr)

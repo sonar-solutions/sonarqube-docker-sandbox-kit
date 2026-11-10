@@ -1,0 +1,9 @@
+# BuildKit applies this to the v3 kit build context. Keep local state,
+# caches and credentials out of the image.
+**/__pycache__
+**/*.pyc
+**/.env
+**/.env.*
+**/*.log
+**/.DS_Store
+**/readiness.json

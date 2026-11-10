@@ -1,6 +1,6 @@
 [project]
 name = "sonarqube-docker-sandbox-kit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Sonar guidance and verification in Docker Sandboxes"
 readme = "README.md"
 license = "LGPL-3.0-or-later"

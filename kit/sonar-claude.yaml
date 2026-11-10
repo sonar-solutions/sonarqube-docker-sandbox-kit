@@ -1,0 +1,166 @@
+# syntax=docker/sandbox-kit:3
+# Sonar + Claude Code as a v3 workload: one OCI image whose manifest
+# annotation carries this descriptor, whose image config carries the runtime
+# contract (sonar-claude.dockerfile, found by filename stem) and whose layers
+# carry the content. See the Docker Sandbox Kit v3 specification.
+#
+# A v3 workload has no inheritance, so the recipe builds FROM the base of
+# Docker's official v3 claude example and this descriptor declares the Claude
+# authentication and egress itself. Bypass-permission seeding, the
+# remote-control relay, the MCP gateway and session verbs are deliberately not
+# carried; see the notes beside each capability.
+schemaVersion: "3"
+kind: workload
+displayName: Sonar + Docker — Claude Code
+description: Claude Code with Sonar Vortex guidance and verification, checked before the agent starts.
+version: "0.2.0"
+sourceUrl: https://github.com/sonar-solutions/sonarqube-docker-sandbox-kit
+licenses: [LGPL-3.0-or-later]
+
+# Arg names are identifiers, so the region host is `cloudDomain`. An arg is
+# exported verbatim, so the server URL is a second enum arg. The launcher must
+# set both from one region choice, and the startup gate refuses a
+# domain/server pair that disagrees.
+args:
+  organization:
+    required: true
+    description: SonarQube Cloud organization key
+    pattern: '^[A-Za-z0-9_.-]+$'
+    env: SONARQUBE_CLI_ORG
+  project:
+    required: true
+    description: Existing SonarQube Cloud project key with Vortex enabled
+    pattern: '^[A-Za-z0-9_.:-]+$'
+    env: SONAR_KIT_PROJECT
+  cloudDomain:
+    default: sonarcloud.io
+    enum: [sonarcloud.io, sonarqube.us]
+    description: SonarQube Cloud region host (EU sonarcloud.io, US sonarqube.us)
+    env: SONAR_KIT_CLOUD_DOMAIN
+  cloudServer:
+    default: https://sonarcloud.io
+    enum: [https://sonarcloud.io, https://sonarqube.us]
+    description: SonarQube Cloud server URL; must match cloudDomain
+    env: SONARQUBE_CLI_SERVER
+
+# No `provides`: the kit's version is not Claude Code's or the Sonar CLI's, and
+# nothing requires this workload by name.
+
+capabilities:
+  # The host launches the agent from the image entrypoint and supplies
+  # WORKSPACE_DIR, which the startup gate requires.
+  - type: com.docker.sandbox/sbx@1
+
+  # Network policy is phase-scoped. The Sonar CLI itself is installed and
+  # checksum-verified at image build, but the startup gate runs
+  # `sonar integrate claude` on every start (create and restart), and that
+  # downloads the sonar-secrets and context-augmentation components from
+  # binaries.sonarsource.com. That host is therefore a runtime grant, pinned
+  # to :443 and never a credential inject target. No install-phase egress is
+  # requested: the workload's install hooks are local. Only the selected
+  # region's two Sonar hosts are allowed: create-phase args expand inside
+  # capability configs, so EU and US remain mutually exclusive.
+  #
+  # Claude hosts restate the official v3 claude example, minus
+  # bridge.claudeusercontent.com (remote control relay) and
+  # mcp-proxy.anthropic.com (claude.ai MCP connectors), which this kit does
+  # not use.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          - api.anthropic.com:443
+          - platform.claude.com:443
+          - downloads.claude.ai:443
+          - claude.com:443
+          - binaries.sonarsource.com:443
+          - "${{ kit.args.cloudDomain }}"
+          - "api.${{ kit.args.cloudDomain }}"
+
+  # The Sonar user token. Required: the gate cannot pass without it.
+  # proxyManaged keeps the real value on the host; the container sees only a
+  # sentinel and the proxy injects the token for the selected region's hosts.
+  - type: com.docker.sandbox/credential@1
+    name: SonarQube Cloud access
+    description: SonarQube Cloud user token for the selected region
+    config:
+      service: sonar-cloud
+      phase: runtime
+      apiKey:
+        name: SONARQUBE_CLI_TOKEN
+        proxyManaged: true
+        inject:
+          - domain: "${{ kit.args.cloudDomain }}"
+            header: Authorization
+            format: "Bearer %s"
+          - domain: "api.${{ kit.args.cloudDomain }}"
+            header: Authorization
+            format: "Bearer %s"
+
+  # Claude authentication, restated from the official v3 claude example:
+  # API key or claude.ai OAuth, whichever the host has bound. Optional because
+  # Claude falls back to /login without a binding. No proxyManaged: Claude
+  # derives its mode from the surfaced credential state (the settings hook
+  # below), and a phantom ANTHROPIC_API_KEY would signal key auth falsely.
+  - type: com.docker.sandbox/credential@1
+    name: Anthropic access
+    optional: true
+    description: Anthropic API access (API key or claude.ai OAuth)
+    config:
+      service: anthropic
+      phase: runtime
+      apiKey:
+        name: ANTHROPIC_API_KEY
+        inject:
+          - {domain: api.anthropic.com, header: x-api-key, format: "%s"}
+      oauth:
+        tokenEndpoint: {host: platform.claude.com, path: /v1/oauth/token}
+        sentinels:
+          accessToken: sk-ant-oat01-proxy-managed
+          refreshToken: sk-ant-ort01-proxy-managed
+        credentialFile:
+          path: ~/.claude/.credentials.json
+          structure:
+            claudeAiOauth:
+              accessToken: "{{.AccessToken}}"
+              refreshToken: "{{.RefreshToken}}"
+              expiresAt: "{{.ExpiresAt}}"
+              scopes: "{{.Scopes}}"
+            primaryApiKey: "{{.PrimaryApiKey}}"
+
+  # The Sonar CLI install is a recipe layer, and the gate reads the sbx@1
+  # WORKSPACE_DIR contract directly, failing closed when it is unset. What
+  # remains is Claude's auth initialization. Unlike the official claude kit,
+  # nothing here selects bypassPermissions or accepts its warning; the helper
+  # merges into ~/.claude/settings.json and removes bypass settings instead of
+  # overwriting the file, and Sonar's project hooks live in the workspace,
+  # which these hooks never write.
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      install:
+        - command: mkdir -p /home/agent/.claude && chown agent:agent /home/agent/.claude
+          user: "0"
+          description: Ensure ~/.claude is agent-owned before the settings merge
+        - command: [python3, /opt/sonar-kit/claude_settings.py]
+          user: agent
+          env: [SBX_CRED_ANTHROPIC_MODE]
+          description: Merge Claude auth helper for the bound credential; strip bypass mode
+
+  # Inline agent-context@2 at Claude's user profile. Required, so a runtime
+  # without @2 refuses the kit rather than silently dropping the guidance; no
+  # @1 fallback is declared.
+  - type: com.docker.sandbox/agent-context@2
+    config:
+      filename: CLAUDE.md
+      directory: /home/agent/.claude
+      content: |
+        This workspace uses Sonar Vortex guidance and verification.
+        Follow the Sonar-generated project instructions and hooks.
+        Preserve existing user changes. Do not disable Sonar hooks or sandbox policy
+        to make a failing check pass. Report a failed or skipped analysis explicitly.
+        Before finishing, run the project's tests and Sonar DEEP analysis for the
+        files you changed. Distinguish actual Sonar output from your own review.
+
+# No agent-sessions@1 or agent-interactive-sessions@1: no headless invocation
+# is declared for this kit. lifecycle `interactive` is omitted, so the image
+# config launches as-is.
