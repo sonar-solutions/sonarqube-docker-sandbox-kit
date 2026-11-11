@@ -11,7 +11,7 @@ Sandboxes and Claude Code are trademarks of their respective owners.
 
 ## Prerequisites
 
-- Docker Sandboxes `sbx` with schema-v2 kit support (reference version: 0.45.1).
+- Docker Sandboxes `sbx` with schema-v3 kit support, plus `docker buildx`.
 - A platform supported by [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/install/).
 - Docker and Claude Code access through Docker's built-in Claude agent.
 - An existing SonarQube Cloud project with Vortex enabled and a Sonar user token.
@@ -38,20 +38,27 @@ and `YOUR_PROJECT` with your SonarQube Cloud keys, and `../your-project` with
 the workspace you want to mount:
 
 ```sh
-sbx kit validate ./kit \
+# Validate the descriptor and recipe. The frontend checks the descriptor before
+# building any content, so a bad field fails in seconds. sbx kit validate does
+# not accept a v3 source kit; the build is the validation.
+docker buildx build ./kit -f kit/sonar-claude.yaml --output type=cacheonly
+
+# Preview how the kit's args and capabilities resolve, without a sandbox.
+sbx kit inspect ./kit \
   --kit-arg organization=YOUR_ORG \
   --kit-arg project=YOUR_PROJECT \
-  --kit-arg cloud-domain=sonarcloud.io
+  --kit-arg cloudDomain=sonarcloud.io
 
+# Run it. sbx builds the source kit on demand, keyed by source hash — no push.
 sbx run --name sonar-claude-project ./kit ../your-project \
   --kit-arg organization=YOUR_ORG \
   --kit-arg project=YOUR_PROJECT \
-  --kit-arg cloud-domain=sonarcloud.io
+  --kit-arg cloudDomain=sonarcloud.io
 ```
 
-For the US region, use `cloud-domain=sonarqube.us` in both commands. Approve the
-regional credential binding if Docker prompts for it. The kit inherits Docker's
-Claude image and network policy and adds the required Sonar endpoints.
+For the US region, use `cloudDomain=sonarqube.us` in both commands. Approve the
+regional credential binding if Docker prompts for it. The kit builds on Docker's
+Claude image and declares a network policy allowing the required Sonar endpoints.
 
 The startup gate verifies the pinned CLI version, authentication, project
 integration, required features and Claude hook references. A `configured`
@@ -91,12 +98,15 @@ are required. The sandbox runtime uses its image's `python3`.
 ```sh
 uv sync --locked
 uv run --locked python -m unittest discover -s tests -v
-mkdir -p dist
-sbx kit pack ./kit -o dist/sonar-claude-0.1.0.zip
+docker buildx build ./kit -f kit/sonar-claude.yaml \
+  --platform linux/amd64,linux/arm64 --push \
+  -t YOUR_REGISTRY/sonar-claude:0.1.0 -t YOUR_REGISTRY/sonar-claude:latest
 ```
 
-Only the `kit/` directory is packaged. The archive contains the kit definition
-and runtime files. Signing and registry distribution use Docker's native tools.
+A v3 kit is a single OCI image: the `# syntax=docker/sandbox-kit:3` frontend
+writes the descriptor into a manifest annotation, stages the agent context and
+builds the recipe. There is no separate pack step or sidecar artifact — the
+image in the registry is the whole kit. Signing is optional and unchanged.
 
 ## Contributing, security and license
 

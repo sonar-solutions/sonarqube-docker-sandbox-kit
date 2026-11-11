@@ -140,6 +140,13 @@ def main():
     # Invalidate a previous success before attempting a new session.
     report.unlink(missing_ok=True)
     try:
+        # The v3 kit exports the region as SONAR_KIT_CLOUD_DOMAIN (a per-run env
+        # arg) rather than a prebuilt SONARQUBE_CLI_SERVER, because v3 cannot
+        # bake a composed value. Derive the server URL the Sonar CLI reads from
+        # the environment; the arg's enum restricts the domain to the two Cloud
+        # regions, and bootstrap revalidates it.
+        os.environ["SONARQUBE_CLI_SERVER"] = "https://" + os.environ.get(
+            "SONAR_KIT_CLOUD_DOMAIN", "sonarcloud.io")
         workspace = (runtime / "workspace.txt").read_text().strip()
         if not workspace or "${WORKDIR}" in workspace:
             raise SetupError("Docker did not resolve the primary workspace.")

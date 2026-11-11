@@ -211,13 +211,11 @@ class MetadataTest(unittest.TestCase):
             self.assertRegex(checksum, r"^[0-9a-f]{64}$")
 
     def test_kit_and_project_versions_match(self):
-        spec = (ROOT / "kit/spec.yaml").read_text()
+        descriptor = (ROOT / "kit/sonar-claude.yaml").read_text()
         project = (ROOT / "pyproject.toml").read_text()
-        readme = (ROOT / "README.md").read_text()
-        kit_version = re.search(r'^version: "([^"]+)"', spec, re.M).group(1)
+        kit_version = re.search(r'^version: "([^"]+)"', descriptor, re.M).group(1)
         project_version = re.search(r'^version = "([^"]+)"', project, re.M).group(1)
         self.assertEqual(kit_version, project_version)
-        self.assertIn(f"sonar-claude-{kit_version}.zip", readme)
 
 
 class BootstrapTest(unittest.TestCase):

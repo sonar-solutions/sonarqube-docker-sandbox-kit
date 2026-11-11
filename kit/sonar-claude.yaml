@@ -1,0 +1,137 @@
+# syntax=docker/sandbox-kit:3
+# Sonar integration for Docker Sandboxes — v3 kit descriptor.
+#
+# Migrated from the v2 `spec.yaml` grammar. A v3 kit is a single OCI image:
+# this descriptor declares what the kit needs from the host as typed
+# capabilities, the recipe (sonar-claude.dockerfile, found by filename stem)
+# carries the runtime contract and content, and the agent context rides in a
+# staged file. Heavily commented by house style; every `# MIGRATION NOTE:`
+# marks a place where v3 cannot say exactly what v2 said and a decision was
+# made.
+schemaVersion: "3"
+
+# MIGRATION NOTE: v2 `kind: sandbox` becomes `kind: workload`. The gate is a
+# synchronous ENTRYPOINT that wraps Claude Code, which only a workload can own
+# (a mixin cannot set ENTRYPOINT), so this stays a workload rather than a mixin.
+kind: workload
+
+displayName: Sonar + Docker — Claude Code
+description: Claude Code with Sonar Vortex guidance and verification, checked before the agent starts.
+
+# MIGRATION NOTE: v2 wrote none of these three. They are the only place a
+# published artifact states its own version, source and license, so they are
+# added even though nothing fails without them.
+version: "0.1.0"
+sourceUrl: https://github.com/ajeetraina/sonarqube-docker-sandbox-kit
+licenses: [LGPL-3.0-or-later]
+
+# MIGRATION NOTE: v2 `extends: claude` inherited the claude agent kit (its
+# image, install and entrypoint). v3 has no kit inheritance for a workload —
+# the recipe bakes the environment instead — so there is no `requires: claude`
+# here. The claude binary and the `agent` user come from the recipe's base
+# image; see the BASE_IMAGE note in sonar-claude.dockerfile.
+
+# MIGRATION NOTE: v2 `environment.variables` interpolated these args into env
+# values that resolve per run. v3 `ENV` is baked at build and cannot carry a
+# per-run value, so each arg becomes a create-phase `env:` arg exported under
+# the name the v2 kit used. SONARQUBE_CLI_SERVER was a *composed* string
+# (`https://<domain>`) with no env-arg equivalent, so the entrypoint derives it
+# from SONAR_KIT_CLOUD_DOMAIN at startup.
+args:
+  organization:
+    required: true
+    description: SonarQube Cloud organization key
+    pattern: '^[A-Za-z0-9_.-]+$'
+    env: SONARQUBE_CLI_ORG
+  project:
+    required: true
+    description: Existing SonarQube Cloud project key with Vortex enabled
+    pattern: '^[A-Za-z0-9_.:-]+$'
+    env: SONAR_KIT_PROJECT
+  # MIGRATION NOTE: v3 arg names cannot contain hyphens, so v2's `cloud-domain`
+  # becomes `cloudDomain`. Pass it as `--kit-arg cloudDomain=...`.
+  cloudDomain:
+    default: sonarcloud.io
+    enum: [sonarcloud.io, sonarqube.us]
+    description: SonarQube Cloud region
+    env: SONAR_KIT_CLOUD_DOMAIN
+
+# MIGRATION NOTE: the pinned SonarQube CLI install moved out of a create-time
+# install hook and into the recipe (a checksum-pinned artifact download that
+# needs nothing from create time). Nothing requires `sonar`, and the version is
+# pinned in versions.json rather than a build arg, so no `provides:` is
+# declared — a kit offering nothing matchable is honest here. To advertise
+# `sonar@<version>`, wire a build arg through to install.py and reference it
+# from both `provides` and `version:`.
+
+capabilities:
+  # MIGRATION NOTE: v2 `permissions.network` was one flat list. v3 is
+  # phase-scoped. binaries.sonarsource.com is gone from every phase because the
+  # CLI download now happens at build, not at create — so the install-phase
+  # grant it needed disappears entirely. Only the runtime Sonar endpoints remain.
+  #
+  # MIGRATION NOTE: v2 listed a single region via `${{ kit.args.cloud-domain }}`.
+  # A create-phase env arg's value is not substituted into descriptor capability
+  # config, so both regions are enumerated here instead. This is a deliberate,
+  # minor widening (the unused region's host is also reachable); the regional
+  # token only authenticates against its own region.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          - sonarcloud.io
+          - api.sonarcloud.io
+          - sonarqube.us
+          - api.sonarqube.us
+
+  # MIGRATION NOTE: v2 `credentials[]` with the `scheme` sugar. The v2 entry was
+  # `required: true`, so it stays required (no `optional: true`). Every inject
+  # domain appears in the same (runtime) phase's allow list above, matched
+  # exactly. Both regions are injected for the same reason the allow list lists
+  # both; the container never sees the token (proxyManaged sentinel swap).
+  # MIGRATION NOTE: credential@1 has no `description` field (strict decoding
+  # rejects it), so v2's description moves to this comment: the SonarQube Cloud
+  # user token for the selected region.
+  - type: com.docker.sandbox/credential@1
+    config:
+      service: sonar-cloud
+      phase: runtime
+      apiKey:
+        name: SONARQUBE_CLI_TOKEN
+        proxyManaged: true
+        inject:
+          - domain: sonarcloud.io
+            scheme: bearer
+          - domain: api.sonarcloud.io
+            scheme: bearer
+          - domain: sonarqube.us
+            scheme: bearer
+          - domain: api.sonarqube.us
+            scheme: bearer
+
+  # MIGRATION NOTE: v2 `setup.files` wrote workspace.txt with a `${WORKDIR}`
+  # substitution. v3 `files[].content` expands only `${{ kit.args.* }}`, not the
+  # runtime workspace path, so this becomes an install hook that writes the file
+  # and declares `env: [WORKSPACE_DIR]` (the v3 spelling of v2's ${WORKDIR}).
+  # The entrypoint still reads workspace.txt, unchanged. The hook runs as the
+  # agent (uid 1000) so the file lands owner-writable in the agent-owned dir.
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      install:
+        - command: ["/bin/sh", "-c", "umask 077 && printf '%s' \"$WORKSPACE_DIR\" > /home/agent/sonar-kit/workspace.txt"]
+          user: "1000"
+          env: [WORKSPACE_DIR]
+          description: Record the resolved workspace path for the startup gate
+
+  # MIGRATION NOTE: v2 `agentInstructions` (filename + content). `filename:` is
+  # workload-only, which this is. The body interpolates no args, so it is staged
+  # from a file via contentFile rather than inlined.
+  - type: com.docker.sandbox/agent-context@1
+    config:
+      filename: CLAUDE.md
+      contentFile: ./sonar-claude-context.md
+
+  # MIGRATION NOTE: every v2 `kind: sandbox` kit is an sbx-launched agent. sbx@1
+  # is config-less and workload-only; it asks the host to launch the agent
+  # rather than let the image entrypoint become PID 1.
+  - type: com.docker.sandbox/sbx@1
