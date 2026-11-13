@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Overlay for the sonar-claude mixin: only the checksum-verified Sonar CLI.
-# No ENTRYPOINT, CMD, USER or WORKDIR — a mixin's contract fields are ignored
-# at assembly, and the base workload's launch command stays in force.
+# No ENTRYPOINT, CMD or WORKDIR — a mixin's contract fields are ignored at
+# assembly, and the base workload's launch command stays in force.
 #
 # The build stage reuses the workload's base, pinned by the same digest, so the
 # same installer runs the same way. To update the pin, see
@@ -23,10 +23,13 @@ RUN if ! command -v python3 >/dev/null 2>&1; then \
 # The overlay ships nothing under /home, so the base keeps root's /home and
 # uid 1000's /home/agent. Every shipped entry is 0/0.
 #
-# This final stage has no USER on purpose. It is file content only: it holds
-# no shell or entrypoint, so it cannot run as a container on its own. v3
-# ignores a mixin's USER at assembly, and the composed sandbox runs as the
-# base workload's declared user (uid 1000 in the workload base). A USER line
-# here would change nothing at runtime and only suggest otherwise.
+# The final stage is file content only: it holds no shell or entrypoint, so it
+# cannot run as a container on its own, and running it standalone is not
+# supported. It still declares an unprivileged numeric USER (1000, the
+# platform's `agent` uid) so the image config does not default to root. This is
+# image metadata only: v3 records a mixin's USER but ignores it at assembly, so the composed sandbox
+# keeps running as the base workload's declared user and no file ownership
+# changes. Every shipped entry stays 0/0.
 FROM scratch
 COPY --from=build /out /
+USER 1000

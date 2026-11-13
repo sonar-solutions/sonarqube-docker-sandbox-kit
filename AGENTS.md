@@ -18,7 +18,13 @@ blocking workload (`kit/`) and an install-only mixin (`kit-mixin/`). Read
 - Region targets are exact: `cloudDomain` and `cloudServer` name the same
   region in both descriptors and in the gate.
 - `install.py` and `versions.json` are kept identical in `kit/sonar-kit/` and
-  `kit-mixin/sonar-kit/`. Both recipes pin the same base image digest.
+  `kit-mixin/sonar-kit/`. Both recipes pin the same base image digest. A v3
+  build context cannot reach a sibling directory, so the mirror stays; only
+  copy-detection for `kit-mixin/sonar-kit/install.py` is excluded, in
+  `.sonarcloud.properties` (automatic analysis; read from the default branch
+  only). Never widen it.
+- The mixin's final `FROM scratch` stage declares `USER 1000`. v3 records a
+  mixin's USER but ignores it at assembly, so composed behavior is unchanged.
 - Use native Docker CLI commands (`docker buildx`, `sbx kit`); this repository
   has no wrapper launcher.
 - CI stays offline: unit tests only, no image pulls and no registry credentials.

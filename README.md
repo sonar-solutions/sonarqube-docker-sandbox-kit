@@ -34,8 +34,10 @@ no way to launch the agent with the gate bypassed.
 - Docker Sandboxes `sbx` 0.51.0 or later (kit schema v3).
 - Docker with Buildx, and a Buildx builder that uses the `docker-container`
   driver (see below).
-- Access to the base image `dhi.io/sbx-templates:claude-code-docker`, which
-  requires `docker login dhi.io`. The recipes pin it by digest.
+- A Docker account, signed in with `docker login dhi.io`, to build the images
+  (the base image `dhi.io/sbx-templates:claude-code-docker` is pulled from
+  that registry). See the [quickstart](https://docs.docker.com/dhi/get-started/).
+  The unit tests and CI do not need it.
 - A platform supported by [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/install/).
 - An existing SonarQube Cloud project with Vortex enabled and a Sonar user token.
 - A source workspace for the agent to work in.
@@ -150,8 +152,9 @@ arguments, and with `BUILDX_BUILDER` still exported.
 
 ## Troubleshooting
 
-- **Build cannot pull the base image:** run `docker login dhi.io` and confirm
-  your account can access it.
+- **Build cannot pull the base image (HTTP 401):** run `docker login dhi.io`
+  with your Docker account and confirm that account can access the pinned
+  image.
 - **Builder error:** use a named builder with the `docker-container` driver and
   `BUILDX_BUILDER` set for `sbx`.
 - **Credentials missing:** store `sonar-cloud` and approve its regional binding.
@@ -186,5 +189,6 @@ the [GNU General Public License v3.0](COPYING).
 
 - [Docker Sandbox Kit v3 specification](https://github.com/docker/sandbox-kit-spec/blob/main/docs/spec/SPEC-v3.md)
 - [Docker Sandboxes documentation](https://docs.docker.com/ai/sandboxes/)
+- [Docker Hardened Images quickstart (`dhi.io` sign-in)](https://docs.docker.com/dhi/get-started/)
 - [Docker credential bindings](https://docs.docker.com/ai/sandboxes/configuration/credentials/)
 - [Sonar Claude Code integration](https://docs.sonarsource.com/sonarqube-cli/integrations/claude-code)

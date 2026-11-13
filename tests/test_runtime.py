@@ -387,6 +387,12 @@ class InstallTest(unittest.TestCase):
         for name in ("install.py", "versions.json"):
             self.assertEqual((ROOT / "kit-mixin/sonar-kit" / name).read_bytes(), (RUNTIME / name).read_bytes(), name)
 
+    def test_copy_detection_exclusion_is_only_the_mirror(self):
+        # The mirror is out of duplication measurement; the canonical copy is not.
+        settings = [line for line in (ROOT / ".sonarcloud.properties").read_text().splitlines()
+                    if line and not line.startswith("#")]
+        self.assertEqual(settings, ["sonar.cpd.exclusions=kit-mixin/sonar-kit/install.py"])
+
     def test_cli_installs_only_to_named_destinations(self):
         with patch.object(installer, "install") as install:
             for argv in ([], ["/etc/passwd"], ["../sonar"], ["/usr/local/bin/sonar"], ["workload", "extra"]):
@@ -582,7 +588,11 @@ class KitContractTest(unittest.TestCase):
         self.assertRegex(recipe, r"(?m)^COPY --chown=0:0 sonar-kit/ /opt/sonar-kit/$")
         self.assertEqual(re.findall(r"^USER (\S+)", recipe, re.M), ["root", "agent"])
         mixin = RECIPES["mixin"].read_text()
-        self.assertFalse(re.search(r"^(ENTRYPOINT|CMD|USER|WORKDIR) ", mixin.split("FROM scratch")[1], re.M))
+        # The mixin's final stage is file content only: no launch fields, and an
+        # explicit unprivileged numeric USER that v3 ignores at assembly.
+        final = mixin.split("FROM scratch")[1]
+        self.assertFalse(re.search(r"^(ENTRYPOINT|CMD|WORKDIR) ", final, re.M))
+        self.assertEqual(re.findall(r"^USER (\S+)$", final, re.M), ["1000"])
         for text in (recipe, KITS["workload"].read_text()):
             for path in re.findall(r"/opt/sonar-kit/([\w.]+)", text):
                 self.assertTrue((RUNTIME / path).is_file(), path)

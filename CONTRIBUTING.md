@@ -34,7 +34,12 @@ Guidelines for changes in this repository:
   and verify the checksums against the published binaries.
 - Keep `install.py` and `versions.json` identical in `kit/sonar-kit/` and
   `kit-mixin/sonar-kit/`; a build context cannot reach a sibling directory, and
-  a test compares the copies.
+  a test compares the copies. The mirror in `kit-mixin/` is excluded from
+  copy-detection only (`.sonarcloud.properties`); the canonical copy in
+  `kit/` stays measured and both are still analyzed for issues. Do not widen
+  that exclusion. SonarQube Cloud reads `.sonarcloud.properties` only for
+  projects using automatic analysis, and only from the default branch, so the
+  exclusion has no effect on remote analysis until it is merged there.
 - To update the base image, resolve the new digest with
   `docker buildx imagetools inspect dhi.io/sbx-templates:claude-code-docker`
   and change the `FROM` line in both recipes together; a test checks they agree.
