@@ -16,7 +16,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-"""Install the exact Sonar artifact into the sandbox, never a floating script."""
+"""Install the exact Sonar artifact into the image, never a floating script."""
 import hashlib
 import json
 import os
@@ -24,9 +24,29 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import sys
 import tempfile
 
+# The only places the recipes install to; the CLI accepts names, not paths.
+DESTINATIONS = {"workload": Path("/usr/local/bin/sonar"),
+                "overlay": Path("/out/usr/local/bin/sonar")}
 BASE_URL = "https://binaries.sonarsource.com/Distribution/sonarqube-cli"
+
+
+def load_lock():
+    return json.loads(Path(__file__).with_name("versions.json").read_text())
+
+
+def pinned_artifact(lock, target):
+    """Return (url, sha256) for target, refusing any lock field that is not a reviewed shape."""
+    release, version = lock.get("release"), lock.get("cli_version")
+    expected = (lock.get("sha256") or {}).get(target)
+    if (lock.get("base_url") != BASE_URL
+            or not isinstance(release, str) or not re.fullmatch(r"\d+(?:\.\d+){3}", release)
+            or not isinstance(version, str) or not release.startswith(version + ".")
+            or not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
+        raise RuntimeError("versions.json is not a valid Sonar CLI pin; nothing was downloaded.")
+    return f"{BASE_URL}/{release}/linux/sonarqube-cli-{release}-{target}.bin", expected
 
 
 def digest(path):
@@ -37,21 +57,16 @@ def digest(path):
     return result.hexdigest()
 
 
-def install(destination=Path("/usr/local/bin/sonar")):
-    lock = json.loads(Path(__file__).with_name("versions.json").read_text())
+def install(destination=DESTINATIONS["workload"]):
     architecture = {"aarch64": "arm64", "arm64": "arm64",
                     "x86_64": "x86-64"}.get(platform.machine())
     if platform.system() != "Linux" or architecture is None:
-        raise RuntimeError("The kit installer runs inside a supported Linux sandbox only.")
+        raise RuntimeError("The kit installer runs only in a supported Linux image build.")
     target = "linux-" + architecture
-    expected = lock["sha256"][target]
+    url, expected = pinned_artifact(load_lock(), target)
     if destination.is_file() and digest(destination) == expected:
         print("SonarQube CLI already matches the pinned checksum.")
         return
-    release = lock["release"]
-    if not re.fullmatch(r"\d+(?:\.\d+)+", release):
-        raise RuntimeError("versions.json must pin a numeric release version.")
-    url = f'{BASE_URL}/{release}/linux/sonarqube-cli-{release}-{target}.bin'
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Stage on the destination filesystem so replacement is atomic.
     fd, filename = tempfile.mkstemp(prefix=".sonar-", dir=destination.parent)
@@ -68,8 +83,15 @@ def install(destination=Path("/usr/local/bin/sonar")):
         staged.replace(destination)
     finally:
         staged.unlink(missing_ok=True)
-    print(f"Installed SonarQube CLI {release} ({target}).")
+    print(f"Installed SonarQube CLI for {target}.")
+
+
+def main(argv):
+    # The workload installs in place; the mixin stages into its overlay root.
+    if len(argv) != 1 or argv[0] not in DESTINATIONS:
+        raise SystemExit(f"usage: install.py {{{'|'.join(DESTINATIONS)}}}")
+    install(DESTINATIONS[argv[0]])
 
 
 if __name__ == "__main__":
-    install()
+    main(sys.argv[1:])

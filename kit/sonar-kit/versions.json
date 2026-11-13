@@ -1,0 +1,9 @@
+{
+  "cli_version": "1.8.0",
+  "release": "1.8.0.5274",
+  "base_url": "https://binaries.sonarsource.com/Distribution/sonarqube-cli",
+  "sha256": {
+    "linux-arm64": "532e71e48b910c58741f9118cde845854c1e4a821ed0f50e1502f06cda3c9bb5",
+    "linux-x86-64": "fbfd39b3798d7c11a1c5c81377351f82ba8ae6be65335243f0bb3c91e7a921d1"
+  }
+}

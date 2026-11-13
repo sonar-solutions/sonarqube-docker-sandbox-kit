@@ -1,0 +1,133 @@
+# syntax=docker/sandbox-kit:3
+# Sonar for Claude Code as a MIXIN: the pinned Sonar CLI in an overlay, the
+# selected region's Sonar credential and egress, Sonar component downloads
+# during install, and a create-time Sonar integration hook. Compose it onto a
+# workload that provides `claude`, for example Docker's built-in Claude kit.
+#
+# NOT EQUIVALENT TO THE WORKLOAD (../kit/sonar-claude.yaml):
+# - A mixin cannot own ENTRYPOINT. The base workload's launch command stays,
+#   so there is no synchronous readiness gate that refuses to start Claude.
+#   Integration runs once, as an install hook at create; it is not rechecked
+#   on restart, and the feature graph and hook references the workload gate
+#   verifies are not checked here.
+# - Whether a failing install hook prevents the agent from launching is
+#   runtime behavior this repository has not verified.
+# - Claude's authentication, egress and permission mode belong to the base
+#   workload. Docker's official v3 claude workload launches with permission
+#   prompts bypassed; this mixin does not, and cannot, change that.
+# Use the workload kit when the blocking gate or prompt-preserving permission
+# mode is required.
+schemaVersion: "3"
+kind: mixin
+displayName: Sonar + Docker — Claude Code (mixin)
+description: >-
+  The pinned Sonar CLI and Vortex integration for Claude Code, layered onto a
+  workload that provides claude. No blocking readiness gate; run the
+  sonar-claude workload for that.
+version: "0.2.0"
+sourceUrl: https://github.com/sonar-solutions/sonarqube-docker-sandbox-kit
+licenses: [LGPL-3.0-or-later]
+
+# Same arguments and exports as the workload, so one launcher serves both.
+args:
+  organization:
+    required: true
+    description: SonarQube Cloud organization key
+    pattern: '^[A-Za-z0-9_.-]+$'
+    env: SONARQUBE_CLI_ORG
+  project:
+    required: true
+    description: Existing SonarQube Cloud project key with Vortex enabled
+    pattern: '^[A-Za-z0-9_.:-]+$'
+    env: SONAR_KIT_PROJECT
+  cloudDomain:
+    default: sonarcloud.io
+    enum: [sonarcloud.io, sonarqube.us]
+    description: SonarQube Cloud region host (EU sonarcloud.io, US sonarqube.us)
+    env: SONAR_KIT_CLOUD_DOMAIN
+  cloudServer:
+    default: https://sonarcloud.io
+    enum: [https://sonarcloud.io, https://sonarqube.us]
+    description: SonarQube Cloud server URL; must match cloudDomain
+    env: SONARQUBE_CLI_SERVER
+
+# `sonar integrate claude` configures Claude Code. Requiring the provider also
+# orders the base workload's install hooks (its Claude settings seed) before
+# this kit's integration hook.
+requires: ["claude"]
+
+capabilities:
+  # Unlike the workload, the integration runs in an install hook, so the
+  # selected region's hosts are needed in both phases. Still exactly one
+  # region. The CLI is a layer, but `sonar integrate claude` downloads the
+  # sonar-secrets and context-augmentation components from
+  # binaries.sonarsource.com, so that host is an install-phase grant (pinned
+  # to :443, never a credential inject target). This mixin runs no
+  # integration at runtime, so the runtime phase does not get it; re-running
+  # `sonar integrate` from the agent is refused by policy.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      install:
+        allow:
+          - binaries.sonarsource.com:443
+          - "${{ kit.args.cloudDomain }}"
+          - "api.${{ kit.args.cloudDomain }}"
+      runtime:
+        allow:
+          - "${{ kit.args.cloudDomain }}"
+          - "api.${{ kit.args.cloudDomain }}"
+
+  - type: com.docker.sandbox/credential@1
+    name: SonarQube Cloud access
+    description: SonarQube Cloud user token for the selected region
+    config:
+      service: sonar-cloud
+      phase: [install, runtime]
+      apiKey:
+        name: SONARQUBE_CLI_TOKEN
+        proxyManaged: true
+        inject:
+          - domain: "${{ kit.args.cloudDomain }}"
+            header: Authorization
+            format: "Bearer %s"
+          - domain: "api.${{ kit.args.cloudDomain }}"
+            header: Authorization
+            format: "Bearer %s"
+
+  # Hook environments are deny-by-default: the CLI needs the Sonar exports,
+  # its sentinel token, the workspace and the sandbox proxy settings.
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      install:
+        - command: |
+            set -eu
+            if [ -z "${WORKSPACE_DIR:-}" ]; then
+              echo "Sonar mixin: no workspace is assigned." >&2
+              exit 1
+            fi
+            case "${SONAR_KIT_CLOUD_DOMAIN:-}:${SONARQUBE_CLI_SERVER:-}" in
+              sonarcloud.io:https://sonarcloud.io|sonarqube.us:https://sonarqube.us) ;;
+              *) echo "Sonar mixin: cloudDomain and cloudServer must name the same region." >&2; exit 1 ;;
+            esac
+            cd "$WORKSPACE_DIR"
+            sonar auth status
+            sonar integrate claude --project "$SONAR_KIT_PROJECT" --non-interactive
+          user: agent
+          env: [WORKSPACE_DIR, SONAR_KIT_PROJECT, SONAR_KIT_CLOUD_DOMAIN, SONARQUBE_CLI_SERVER,
+                SONARQUBE_CLI_ORG, SONARQUBE_CLI_TOKEN,
+                HTTP_PROXY, HTTPS_PROXY, NO_PROXY, http_proxy, https_proxy, no_proxy]
+          description: Integrate Sonar Vortex guidance and verification into the workspace
+
+  # A tool mixin contributes a body only; the base workload owns Claude's
+  # discovery profile.
+  - type: com.docker.sandbox/agent-context@2
+    config:
+      content: |
+        This workspace uses Sonar Vortex guidance and verification.
+        Follow the Sonar-generated project instructions and hooks.
+        Preserve existing user changes. Do not disable Sonar hooks or sandbox policy
+        to make a failing check pass. Report a failed or skipped analysis explicitly.
+        Before finishing, run the project's tests and Sonar DEEP analysis for the
+        files you changed. Distinguish actual Sonar output from your own review.
+        Sonar setup in this sandbox is not gated before startup; if `sonar auth status`
+        fails, report it instead of assuming Sonar is configured.
